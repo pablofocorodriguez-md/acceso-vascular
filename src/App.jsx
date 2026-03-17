@@ -267,7 +267,7 @@ export default function App() {
   return (
     <div style={s.app}>
       <h1 style={s.title}>Selección de acceso vascular</h1>
-      <p style={s.subtitle}>Basado en criterios MAGIC 2015</p>
+      <p style={s.subtitle}>Basado en criterios MAGIC version demo 2015</p>
       <p style={{ fontSize: 11, color: "#94a3b8", margin: "-0.75rem 0 1.5rem", fontFamily: "monospace" }}>
         código {APP_VERSION} · lógica {LOGICA_VERSION}
       </p>
