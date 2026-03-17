@@ -1,24 +1,38 @@
 import { useState } from "react";
 
 const APP_VERSION = "v1.4";
-const LOGICA_VERSION = "v1.3";
+const LOGICA_VERSION = "v1.4";
 
 const IRC_WARNING = "IRC avanzada, prediálisis o diálisis. Consultar Nefrología antes de indicar PICC para preservar patrimonio venoso ante eventual fístula arteriovenosa.";
 const DL_WARNING = "Verificar antes de solicitar doble lumen:\n1. ¿Las soluciones son realmente incompatibles?\n2. ¿Deben administrarse simultáneamente?\n3. ¿No es posible escalonar ni usar otro acceso?\nSolo justificado si no existe alternativa viable.";
 
+// Devuelve { main, servicio, alt, note, bridge, warnings[], source, incluyePICC }
+// bridge: cuando P4=H1 + D3/D4 → resultado del árbol evaluado sin P4
+// bridge es null en todos los demás casos
 function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) {
-  const result = { main: null, servicio: null, alt: null, warnings: [], source: null, note: null, incluyePICC: false };
+  const result = { main: null, servicio: null, alt: null, note: null, bridge: null, warnings: [], source: null, incluyePICC: false };
   const addWarning = (w) => result.warnings.push(w);
   const setPICC = () => {
     result.incluyePICC = true;
     if (irc) addWarning(IRC_WARNING);
     if (doubleLumen) addWarning(DL_WARNING);
   };
+
+  // BLOQUE A — prioridad máxima
   if (hemodinamico) {
     result.main = "CVC no tunelizado — yugular"; result.servicio = "Angiografía";
     result.alt = "CVC subclavia (Cirugía) si hay contraindicación yugular";
-    result.source = "MAGIC 2015 — CVC en paciente crítico"; return result;
+    result.source = "MAGIC 2015 — CVC en paciente crítico";
+    // Opción B: D3/D4 → CVC es puente; calcular acceso definitivo
+    if (duracion === "D3" || duracion === "D4") {
+      const br = decidir({ duracion, terapias, venas, hemodinamico: false, irc, doubleLumen });
+      result.bridge = br;
+      result.incluyePICC = br.incluyePICC; // P6 aplica si el definitivo es PICC
+    }
+    return result;
   }
+
+  // BLOQUE B — quimioterapia
   if (terapias.includes("quimio")) {
     if (duracion === "D4") {
       result.main = "Port implantable"; result.servicio = "Cirugía";
@@ -31,7 +45,10 @@ function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) 
       result.source = "MAGIC 2015"; setPICC(); return result;
     }
   }
+
   const requiereCentral = terapias.includes("npt") || terapias.includes("ph");
+
+  // BLOQUE C — selección por duración
   if (duracion === "D1") {
     if (requiereCentral) {
       result.main = "PICC o CVC no tunelizado"; result.servicio = "Angiografía";
@@ -49,10 +66,11 @@ function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) 
     }
     if (venas === "V2" || venas === "V3") {
       result.main = "Midline"; result.servicio = "Angiografía";
-      result.alt = "PICC si se anticipa extensión > 5 días";
-      result.source = "MAGIC 2015"; return result;
+      result.alt = "Si se anticipa extensión, el midline puede mantenerse hasta ~28 días con medicación periféricamente compatible (Paje 2025). Considerar PICC si la duración supera ese umbral o la medicación no es compatible.";
+      result.source = "MAGIC 2015; Paje et al., JAMA Intern Med 2025"; return result;
     }
   }
+
   if (duracion === "D2") {
     if (terapias.includes("irritante")) {
       result.main = "PICC"; result.servicio = "Angiografía";
@@ -61,6 +79,7 @@ function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) 
     result.main = "Midline"; result.servicio = "Angiografía";
     result.source = "MAGIC 2015"; return result;
   }
+
   if (duracion === "D3") {
     result.main = "PICC"; result.servicio = "Angiografía";
     result.alt = "Midline si duración ≤ 28 días y medicación periféricamente compatible";
@@ -68,11 +87,13 @@ function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) 
     result.note = "Paje et al. (2025): menor riesgo de complicaciones con midline vs. PICC en OPAT hasta 28 días. Preferir PICC a partir de los 30 días.";
     setPICC(); return result;
   }
+
   if (duracion === "D4") {
     result.main = "PICC o Hickman"; result.servicio = "Angiografía / Cirugía";
     result.alt = "Hickman preferible si duración > 6 meses o acceso frecuente e intermitente";
     result.source = "MAGIC 2015"; setPICC(); return result;
   }
+
   return result;
 }
 
@@ -140,6 +161,8 @@ export default function App() {
     </div>
   );
 
+  const todasAdvertencias = r ? [...r.warnings, ...(r.bridge?.warnings ?? [])] : [];
+
   return (
     <div style={{ fontFamily: "'DM Sans', system-ui, sans-serif", background: "#f8fafc", minHeight: "100vh" }}>
 
@@ -199,7 +222,7 @@ export default function App() {
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <PL n={4} t="¿PVC o múltiples vasoactivos?" />
+            <PL n={4} t="¿PVC o múltiples vasoactivos actualmente?" />
             <div style={{ display: "flex", gap: 6 }}>
               <button style={tb(hemo === true, true)} onClick={() => setHemo(true)}>Sí</button>
               <button style={tb(hemo === false, false)} onClick={() => setHemo(false)}>No</button>
@@ -244,8 +267,11 @@ export default function App() {
 
           {r ? (
             <>
+              {/* Card principal */}
               <div style={{ borderRadius: 10, border: "1.5px solid #7dd3fc", background: "#f0f9ff", padding: "14px 16px", marginBottom: 8 }}>
-                <p style={{ fontSize: 9, fontWeight: 700, color: "#0284c7", textTransform: "uppercase", letterSpacing: "0.07em", margin: "0 0 5px" }}>Recomendación</p>
+                <p style={{ fontSize: 9, fontWeight: 700, color: "#0284c7", textTransform: "uppercase", letterSpacing: "0.07em", margin: "0 0 5px" }}>
+                  {r.bridge ? "Dispositivo inmediato" : "Recomendación"}
+                </p>
                 <p style={{ fontSize: 18, fontWeight: 700, color: "#0c4a6e", margin: "0 0 3px", lineHeight: 1.25 }}>{r.main}</p>
                 {r.servicio && <p style={{ fontSize: 11, color: "#0369a1", margin: "3px 0 0", fontWeight: 500 }}>→ {r.servicio}</p>}
                 {r.alt && (
@@ -257,14 +283,38 @@ export default function App() {
                 {r.source && <p style={{ fontSize: 10, color: "#94a3b8", margin: "8px 0 0", fontStyle: "italic" }}>{r.source}</p>}
               </div>
 
-              {r.note && (
+              {/* Card acceso definitivo (bridge) — solo P4=H1 + D3/D4 */}
+              {r.bridge && (
+                <div style={{ borderRadius: 10, border: "1.5px dashed #94a3b8", background: "#f8fafc", padding: "14px 16px", marginBottom: 8 }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em", margin: "0 0 2px" }}>Acceso definitivo</p>
+                  <p style={{ fontSize: 10, color: "#94a3b8", margin: "0 0 8px", fontStyle: "italic" }}>Planificar al estabilizarse — el CVC es un puente</p>
+                  <p style={{ fontSize: 16, fontWeight: 700, color: "#334155", margin: "0 0 3px", lineHeight: 1.25 }}>{r.bridge.main}</p>
+                  {r.bridge.servicio && <p style={{ fontSize: 11, color: "#475569", margin: "3px 0 0", fontWeight: 500 }}>→ {r.bridge.servicio}</p>}
+                  {r.bridge.alt && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e2e8f0" }}>
+                      <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 3px" }}>Alternativa</p>
+                      <p style={{ fontSize: 12, color: "#475569", margin: 0, lineHeight: 1.5 }}>{r.bridge.alt}</p>
+                    </div>
+                  )}
+                  {r.bridge.note && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e2e8f0" }}>
+                      <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 3px" }}>Nota de evidencia</p>
+                      <p style={{ fontSize: 11, color: "#475569", margin: 0, lineHeight: 1.6 }}>{r.bridge.note}</p>
+                    </div>
+                  )}
+                  {r.bridge.source && <p style={{ fontSize: 10, color: "#94a3b8", margin: "8px 0 0", fontStyle: "italic" }}>{r.bridge.source}</p>}
+                </div>
+              )}
+
+              {/* Nota de evidencia — solo cuando no hay bridge */}
+              {r.note && !r.bridge && (
                 <div style={{ borderRadius: 7, background: "#f0f9ff", border: "1px solid #bae6fd", padding: "10px 12px", marginBottom: 8 }}>
                   <p style={{ fontSize: 9, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 4px" }}>Nota de evidencia</p>
                   <p style={{ fontSize: 11, color: "#0369a1", margin: 0, lineHeight: 1.6 }}>{r.note}</p>
                 </div>
               )}
 
-              {r.warnings.map((w, i) => (
+              {todasAdvertencias.map((w, i) => (
                 <div key={i} style={{ borderRadius: 7, border: "1.5px solid #fbbf24", background: "#fffbeb", padding: "10px 12px", marginBottom: 8 }}>
                   <p style={{ fontSize: 9, fontWeight: 700, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 4px" }}>⚠ Advertencia</p>
                   <p style={{ fontSize: 11, color: "#92400e", margin: 0, lineHeight: 1.6, whiteSpace: "pre-line" }}>{w}</p>
@@ -286,10 +336,11 @@ export default function App() {
             </div>
             {DISPOSITIVOS.map(({ dev, serv }, i) => {
               const esRec = r && r.main && r.main.toLowerCase().includes(dev.toLowerCase());
+              const esBridge = r?.bridge?.main && r.bridge.main.toLowerCase().includes(dev.toLowerCase());
               return (
-                <div key={dev} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 12px", borderBottom: i < DISPOSITIVOS.length - 1 ? "1px solid #f1f5f9" : "none", background: esRec ? "#f0f9ff" : "#fff", transition: "background 0.2s" }}>
-                  <span style={{ fontSize: 12, color: esRec ? "#0284c7" : "#334155", fontWeight: esRec ? 600 : 400 }}>{dev}</span>
-                  <span style={{ fontSize: 10, color: esRec ? "#0284c7" : "#94a3b8" }}>{serv}</span>
+                <div key={dev} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 12px", borderBottom: i < DISPOSITIVOS.length - 1 ? "1px solid #f1f5f9" : "none", background: esRec ? "#f0f9ff" : esBridge ? "#f8fafc" : "#fff", transition: "background 0.2s" }}>
+                  <span style={{ fontSize: 12, color: esRec ? "#0284c7" : esBridge ? "#64748b" : "#334155", fontWeight: (esRec || esBridge) ? 600 : 400 }}>{dev}</span>
+                  <span style={{ fontSize: 10, color: esRec ? "#0284c7" : esBridge ? "#64748b" : "#94a3b8" }}>{serv}</span>
                 </div>
               );
             })}
