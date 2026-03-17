@@ -1,15 +1,15 @@
 import { useState } from "react";
 
-const APP_VERSION = "v1.4";
-const LOGICA_VERSION = "v1.4";
+const APP_VERSION = "v1.6";
+const LOGICA_VERSION = "v1.6";
 
-const IRC_WARNING = "IRC avanzada, prediálisis o diálisis. Consultar Nefrología antes de indicar PICC para preservar patrimonio venoso ante eventual fístula arteriovenosa.";
+const IRC_WARNING = "IRC avanzada, prediálisis o diálisis. Consultar Nefrología antes de indicar PICC para preservar patrimonio venoso ante eventual fístula arteriovenosa.\n\nNota MAGIC-ONC 2025: en IRC estadio 3B o peor (eGFR < 45), la consulta nefrológica es apropiada antes de cualquier VAD — independientemente del dispositivo recomendado.";
 const DL_WARNING = "Verificar antes de solicitar doble lumen:\n1. ¿Las soluciones son realmente incompatibles?\n2. ¿Deben administrarse simultáneamente?\n3. ¿No es posible escalonar ni usar otro acceso?\nSolo justificado si no existe alternativa viable.";
 
 // Devuelve { main, servicio, alt, note, bridge, warnings[], source, incluyePICC }
-// bridge: cuando P4=H1 + D3/D4 → resultado del árbol evaluado sin P4
+// bridge: cuando P4=H1 + D3/D4, o cuando sólido urgente D4 → resultado del árbol evaluado sin urgencia
 // bridge es null en todos los demás casos
-function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) {
+function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen, tipoOnco, urgenciaOnco }) {
   const result = { main: null, servicio: null, alt: null, note: null, bridge: null, warnings: [], source: null, incluyePICC: false };
   const addWarning = (w) => result.warnings.push(w);
   const setPICC = () => {
@@ -23,26 +23,59 @@ function decidir({ duracion, terapias, venas, hemodinamico, irc, doubleLumen }) 
     result.main = "CVC no tunelizado — yugular"; result.servicio = "Angiografía";
     result.alt = "CVC subclavia (Cirugía) si hay contraindicación yugular";
     result.source = "MAGIC 2015 — CVC en paciente crítico";
-    // Opción B: D3/D4 → CVC es puente; calcular acceso definitivo
     if (duracion === "D3" || duracion === "D4") {
-      const br = decidir({ duracion, terapias, venas, hemodinamico: false, irc, doubleLumen });
+      const br = decidir({ duracion, terapias, venas, hemodinamico: false, irc, doubleLumen, tipoOnco, urgenciaOnco });
       result.bridge = br;
-      result.incluyePICC = br.incluyePICC; // P6 aplica si el definitivo es PICC
+      result.incluyePICC = br.incluyePICC;
     }
     return result;
   }
 
   // BLOQUE B — quimioterapia
   if (terapias.includes("quimio")) {
-    if (duracion === "D4") {
-      result.main = "Port implantable"; result.servicio = "Cirugía";
-      result.alt = "Hickman (Cirugía) si se prefiere acceso externo";
-      result.source = "MAGIC 2015; ONS 2017"; return result;
+    // Hematológico — cualquier duración
+    if (tipoOnco === "hemato") {
+      result.main = "PICC doble lumen / Catéter tunelizado";
+      result.servicio = "Angiografía / Cirugía";
+      result.alt = "Ambos son equivalentes y apropiados. Port apropiado en contexto no urgente.";
+      result.source = "MAGIC-ONC 2025";
+      setPICC(); return result;
     }
-    if (duracion === "D3") {
+
+    // Sólido — urgente
+    if (tipoOnco === "solido" && urgenciaOnco === "urgente") {
+      if (duracion === "D4") {
+        // Bridge oncológico
+        result.main = "PICC"; result.servicio = "Angiografía";
+        result.source = "MAGIC-ONC 2025";
+        const br = decidir({ duracion, terapias, venas, hemodinamico: false, irc, doubleLumen, tipoOnco, urgenciaOnco: "nourgente" });
+        result.bridge = br;
+        result.incluyePICC = true;
+        if (irc) addWarning(IRC_WARNING);
+        if (doubleLumen) addWarning(DL_WARNING);
+        return result;
+      }
+      // D1, D2, D3 urgente
       result.main = "PICC"; result.servicio = "Angiografía";
-      result.alt = "Port implantable si se anticipa continuación > 3 meses";
-      result.source = "MAGIC 2015"; setPICC(); return result;
+      result.source = "MAGIC-ONC 2025 — urgencia oncológica";
+      setPICC(); return result;
+    }
+
+    // Sólido — no urgente
+    if (tipoOnco === "solido" && urgenciaOnco === "nourgente") {
+      if (duracion === "D4") {
+        result.main = "Port implantable / Hickman"; result.servicio = "Cirugía";
+        result.alt = "Ambos equivalentes. Hickman si se prefiere acceso externo.";
+        result.source = "MAGIC 2015; ONS 2017; MAGIC-ONC 2025"; return result;
+      }
+      if (duracion === "D3") {
+        result.main = "PICC"; result.servicio = "Angiografía";
+        result.alt = "Port implantable si se anticipa continuación > 3 meses";
+        result.source = "MAGIC 2015; MAGIC-ONC 2025"; setPICC(); return result;
+      }
+      // D1/D2 sólido no urgente — igual que C0/C4
+      result.main = "PICC"; result.servicio = "Angiografía";
+      result.source = "MAGIC 2015; MAGIC-ONC 2025"; setPICC(); return result;
     }
   }
 
@@ -136,19 +169,31 @@ function Chk({ sel }) {
 export default function App() {
   const [duracion, setDuracion] = useState(null);
   const [terapias, setTerapias] = useState([]);
+  const [tipoOnco, setTipoOnco] = useState(null);
+  const [urgenciaOnco, setUrgenciaOnco] = useState(null);
   const [venas, setVenas] = useState(null);
   const [hemo, setHemo] = useState(null);
   const [irc, setIrc] = useState(null);
   const [dl, setDl] = useState(null);
 
-  const toggle = (val) => setTerapias(p => p.includes(val) ? p.filter(v => v !== val) : [...p, val]);
-  const listoSinP6 = duracion && terapias.length > 0 && venas && hemo !== null && irc !== null;
-  const rParcial = listoSinP6 ? decidir({ duracion, terapias, venas, hemodinamico: hemo, irc, doubleLumen: false }) : null;
+  const tieneQuimio = terapias.includes("quimio");
+  const necesitaP2b = tieneQuimio && tipoOnco === "solido";
+
+  const toggle = (val) => {
+    setTerapias(p => p.includes(val) ? p.filter(v => v !== val) : [...p, val]);
+    if (val === "quimio") { setTipoOnco(null); setUrgenciaOnco(null); }
+  };
+
+  const p2aCompleta = !tieneQuimio || tipoOnco !== null;
+  const p2bCompleta = !necesitaP2b || urgenciaOnco !== null;
+
+  const listoSinP6 = duracion && terapias.length > 0 && p2aCompleta && p2bCompleta && venas && hemo !== null && irc !== null;
+  const rParcial = listoSinP6 ? decidir({ duracion, terapias, venas, hemodinamico: hemo, irc, doubleLumen: false, tipoOnco, urgenciaOnco }) : null;
   const mostrarP6 = rParcial?.incluyePICC === true;
   const listo = listoSinP6 && (!mostrarP6 || dl !== null);
-  const r = listo ? decidir({ duracion, terapias, venas, hemodinamico: hemo, irc, doubleLumen: dl === true }) : null;
-  const progreso = [duracion, terapias.length > 0, venas, hemo !== null, irc !== null].filter(Boolean).length;
-  const reset = () => { setDuracion(null); setTerapias([]); setVenas(null); setHemo(null); setIrc(null); setDl(null); };
+  const r = listo ? decidir({ duracion, terapias, venas, hemodinamico: hemo, irc, doubleLumen: dl === true, tipoOnco, urgenciaOnco }) : null;
+  const progreso = [duracion, terapias.length > 0, p2aCompleta && tieneQuimio ? tipoOnco : true, venas, hemo !== null, irc !== null].filter(Boolean).length;
+  const reset = () => { setDuracion(null); setTerapias([]); setTipoOnco(null); setUrgenciaOnco(null); setVenas(null); setHemo(null); setIrc(null); setDl(null); };
 
   const ob = (sel) => ({ textAlign: "left", padding: "7px 10px", borderRadius: 6, fontFamily: "inherit", border: sel ? "1.5px solid #0284c7" : "1px solid #e2e8f0", background: sel ? "#f0f9ff" : "#fff", color: sel ? "#075985" : "#334155", fontSize: 12, cursor: "pointer", width: "100%", transition: "all 0.1s" });
   const cb = (sel) => ({ ...ob(sel), display: "flex", alignItems: "flex-start", gap: 8 });
@@ -172,7 +217,7 @@ export default function App() {
           <h1 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: "#0f172a" }}>Selección de acceso vascular</h1>
           <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>código {APP_VERSION} · lógica {LOGICA_VERSION}</span>
         </div>
-        <span style={{ fontSize: 10, color: "#94a3b8", fontStyle: "italic" }}>MAGIC 2015</span>
+        <span style={{ fontSize: 10, color: "#94a3b8", fontStyle: "italic" }}>MAGIC 2015 · MAGIC-ONC 2025</span>
       </div>
 
       {/* Layout dos columnas */}
@@ -205,6 +250,44 @@ export default function App() {
               })}
             </div>
           </div>
+
+          {/* P2a — tipo de cáncer, solo si hay quimio */}
+          {tieneQuimio && (
+            <div style={{ marginBottom: 14, padding: "12px 14px", borderRadius: 7, border: "1px dashed #7dd3fc", background: "#f0f9ff" }}>
+              <div style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: "#0284c7", background: "#bae6fd", borderRadius: 3, padding: "1px 6px" }}>P2a · oncológico</span>
+              </div>
+              <PL n="2a" t="Tipo de cáncer" />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={ob(tipoOnco === "solido")} onClick={() => { setTipoOnco("solido"); setUrgenciaOnco(null); }}>
+                  <span style={{ fontSize: 12 }}>Tumor sólido</span>
+                </button>
+                <button style={ob(tipoOnco === "hemato")} onClick={() => { setTipoOnco("hemato"); setUrgenciaOnco(null); }}>
+                  <span style={{ fontSize: 12 }}>Hematológico</span>
+                  <span style={{ display: "block", fontSize: 10, color: tipoOnco === "hemato" ? "#0284c7" : "#94a3b8", marginTop: 1 }}>leucemia, linfoma, mieloma…</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* P2b — urgencia, solo si sólido */}
+          {necesitaP2b && (
+            <div style={{ marginBottom: 14, padding: "12px 14px", borderRadius: 7, border: "1px dashed #7dd3fc", background: "#f0f9ff" }}>
+              <div style={{ marginBottom: 6 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: "#0284c7", background: "#bae6fd", borderRadius: 3, padding: "1px 6px" }}>P2b · oncológico</span>
+              </div>
+              <PL n="2b" t="Urgencia de inicio de quimioterapia" />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={ob(urgenciaOnco === "urgente")} onClick={() => setUrgenciaOnco("urgente")}>
+                  <span style={{ fontSize: 12 }}>Urgente</span>
+                  <span style={{ display: "block", fontSize: 10, color: urgenciaOnco === "urgente" ? "#0284c7" : "#94a3b8", marginTop: 1 }}>inicio en ≤ 48 horas</span>
+                </button>
+                <button style={ob(urgenciaOnco === "nourgente")} onClick={() => setUrgenciaOnco("nourgente")}>
+                  <span style={{ fontSize: 12 }}>No urgente</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div style={{ marginBottom: 14 }}>
             <PL n={3} t="Patrimonio venoso" />
